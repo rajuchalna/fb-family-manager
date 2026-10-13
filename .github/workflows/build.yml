@@ -22,20 +22,7 @@ jobs:
           pip install selenium pyinstaller
 
       - name: Build EXE
-        run: |
-          pyinstaller --onefile --windowed --name "FBFamilyManager" ^
-            --collect-all selenium ^
-            --hidden-import selenium ^
-            --hidden-import selenium.webdriver ^
-            --hidden-import selenium.webdriver.chrome ^
-            --hidden-import selenium.webdriver.chrome.webdriver ^
-            --hidden-import selenium.webdriver.chrome.service ^
-            --hidden-import selenium.webdriver.chrome.options ^
-            --hidden-import selenium.webdriver.common.by ^
-            --hidden-import selenium.webdriver.common.keys ^
-            --hidden-import selenium.webdriver.support.ui ^
-            --hidden-import selenium.webdriver.support.expected_conditions ^
-            main.py
+        run: pyinstaller --onefile --windowed --name "FBFamilyManager" --collect-all selenium --hidden-import selenium --hidden-import selenium.webdriver --hidden-import selenium.webdriver.chrome --hidden-import selenium.webdriver.chrome.webdriver --hidden-import selenium.webdriver.chrome.service --hidden-import selenium.webdriver.chrome.options --hidden-import selenium.webdriver.common.by --hidden-import selenium.webdriver.common.keys --hidden-import selenium.webdriver.support.ui --hidden-import selenium.webdriver.support.expected_conditions main.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
