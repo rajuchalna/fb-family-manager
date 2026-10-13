@@ -8,11 +8,14 @@ import json
 import tempfile
 import re
 import time
+import subprocess
+import zipfile
+import urllib.request
 
-APP_VERSION = "v3.0-DARK-CENT"
+APP_VERSION = "v3.2-CENT134"
 
 # ============================================================
-# SELENIUM IMPORTS (force PyInstaller to bundle)
+# SELENIUM IMPORTS
 # ============================================================
 SELENIUM_OK = False
 SELENIUM_ERR = ""
@@ -29,6 +32,7 @@ try:
     import selenium.webdriver.support.expected_conditions
     from selenium.webdriver.chrome.webdriver import WebDriver as ChromeDriver
     from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
     SELENIUM_OK = True
 except Exception as _e:
     SELENIUM_ERR = str(_e)
@@ -36,9 +40,23 @@ except Exception as _e:
 
 DB = "fb_accounts.db"
 COOKIE_FOLDER = os.path.join(os.path.expanduser("~"), "fb_cookies")
+DRIVER_CACHE = os.path.join(os.path.expanduser("~"), ".fb_family_manager")
+
+# Chrome 134 base (Cent Browser 5.2.x এর internal)
+CHROME_MAJOR = "134"
+
+# ChromeDriver download URLs (try in order)
+DRIVER_URLS = [
+    # Chrome for Testing (official)
+    f"https://storage.googleapis.com/chrome-for-testing-public/134.0.6998.165/win64/chromedriver-win64.zip",
+    f"https://storage.googleapis.com/chrome-for-testing-public/134.0.6998.117/win64/chromedriver-win64.zip",
+    f"https://storage.googleapis.com/chrome-for-testing-public/134.0.6998.89/win64/chromedriver-win64.zip",
+    # Older URLs
+    f"https://chromedriver.storage.googleapis.com/134.0.6998.117/chromedriver_win32.zip",
+]
 
 # ============================================================
-# DARK THEME COLORS
+# DARK THEME
 # ============================================================
 BG_MAIN = "#0d0d0d"
 BG_PANEL = "#1a1a1a"
@@ -46,7 +64,6 @@ BG_INPUT = "#252525"
 BG_HOVER = "#2d2d2d"
 FG_TEXT = "#f0f0f0"
 FG_LABEL = "#909090"
-BORDER = "#333333"
 GREEN = "#00c853"
 BLUE = "#2962ff"
 ORANGE = "#ff6d00"
@@ -54,7 +71,6 @@ PURPLE = "#aa00ff"
 RED = "#d50000"
 
 
-# ---------- DATABASE ----------
 def init_db():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -96,7 +112,6 @@ def delete_account(acc_id):
     conn.close()
 
 
-# ---------- COOKIE HELPERS ----------
 def normalize_cookie(s):
     s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     return re.sub(r"\s+", " ", s).strip()
@@ -116,19 +131,17 @@ def get_c_user(cookie_str):
     return parse_cookie(cookie_str).get("c_user", "")
 
 
-# ---------- BROWSER ----------
+# ============================================================
+# BROWSER FIND
+# ============================================================
 def find_cent_browser():
-    """Find Cent Browser first, then fallback."""
     user = os.path.expanduser("~")
     candidates = [
+        os.path.join(user, r"AppData\Local\CentBrowser\Application\chrome.exe"),
         r"C:\Program Files (x86)\CentBrowser\Application\chrome.exe",
         r"C:\Program Files\CentBrowser\Application\chrome.exe",
-        os.path.join(user, r"AppData\Local\CentBrowser\Application\chrome.exe"),
-        # fallbacks
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
     ]
     for p in candidates:
         if os.path.exists(p):
@@ -136,6 +149,71 @@ def find_cent_browser():
     return None
 
 
+def find_cached_driver():
+    """Look for chromedriver.exe already downloaded."""
+    if not os.path.isdir(DRIVER_CACHE):
+        return None
+    # Search recursively
+    for root, dirs, files in os.walk(DRIVER_CACHE):
+        if "chromedriver.exe" in files:
+            return os.path.join(root, "chromedriver.exe")
+    return None
+
+
+# ============================================================
+# CHROMEDRIVER DOWNLOAD
+# ============================================================
+def download_chromedriver(progress_cb=None):
+    """
+    Download matching ChromeDriver 134 for Cent Browser 5.2.x.
+    Returns path to chromedriver.exe, or None on failure.
+    """
+    # 1) Check cache first
+    cached = find_cached_driver()
+    if cached:
+        return cached
+
+    os.makedirs(DRIVER_CACHE, exist_ok=True)
+
+    # 2) Try each URL
+    for url in DRIVER_URLS:
+        try:
+            if progress_cb:
+                progress_cb(f"Downloading: {url.split('/')[-1]}...")
+            zip_path = os.path.join(DRIVER_CACHE, "chromedriver.zip")
+            urllib.request.urlretrieve(url, zip_path)
+
+            # Extract
+            extract_dir = os.path.join(DRIVER_CACHE, "driver_" + str(int(time.time())))
+            os.makedirs(extract_dir, exist_ok=True)
+            with zipfile.ZipFile(zip_path, "r") as z:
+                z.extractall(extract_dir)
+            try:
+                os.remove(zip_path)
+            except Exception:
+                pass
+
+            # Find chromedriver.exe
+            for root, dirs, files in os.walk(extract_dir):
+                if "chromedriver.exe" in files:
+                    return os.path.join(root, "chromedriver.exe")
+        except Exception:
+            continue
+
+    # 3) Try webdriver-manager as fallback
+    try:
+        from webdriver_manager.chrome import ChromeDriverManager
+        path = ChromeDriverManager().install()
+        return path
+    except Exception:
+        pass
+
+    return None
+
+
+# ============================================================
+# LAUNCH BROWSER
+# ============================================================
 def launch_browser(account_name, cookie_str, target_url):
     if not SELENIUM_OK:
         messagebox.showerror("Selenium Error",
@@ -145,7 +223,7 @@ def launch_browser(account_name, cookie_str, target_url):
     browser_path = find_cent_browser()
     if not browser_path:
         messagebox.showerror("Browser",
-            "Cent Browser / Chrome paoa jayni")
+            "Cent Browser paoa jayni.\nInstall: centbrowser.com")
         return
 
     safe = re.sub(r"[^A-Za-z0-9_\-]", "_", account_name)[:20]
@@ -164,11 +242,33 @@ def launch_browser(account_name, cookie_str, target_url):
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
 
-    try:
-        driver = ChromeDriver(options=opts)
-    except Exception as e:
-        messagebox.showerror("Browser launch failed", f"{type(e).__name__}: {e}")
-        return
+    # Ensure driver exists (cached or download)
+    driver_path = find_cached_driver()
+    if not driver_path:
+        driver_path = download_chromedriver()
+
+    driver = None
+    if driver_path and os.path.exists(driver_path):
+        try:
+            service = Service(executable_path=driver_path)
+            driver = ChromeDriver(options=opts, service=service)
+        except Exception as e1:
+            driver = None
+
+    if driver is None:
+        # Final fallback: let selenium auto-manage
+        try:
+            driver = ChromeDriver(options=opts)
+        except Exception as e2:
+            messagebox.showerror("Browser launch failed",
+                f"Error: {e2}\n\n"
+                f"Driver: {driver_path or 'not downloaded'}\n"
+                f"Cent: {browser_path}\n\n"
+                f"Manual fix:\n"
+                f"1. Download ChromeDriver 134 from:\n"
+                f"https://googlechromelabs.github.io/chrome-for-testing/\n"
+                f"2. Extract to:\n{DRIVER_CACHE}")
+            return
 
     try:
         driver.get("https://www.facebook.com/")
@@ -240,9 +340,6 @@ def dark_frame(parent, title=None):
     return f
 
 
-# ============================================================
-# MAIN APP
-# ============================================================
 class App:
     def __init__(self, root):
         self.root = root
@@ -256,19 +353,23 @@ class App:
         self._build_bottom()
         self.refresh()
 
-        # Auto-load folder on start
         self.root.after(500, self.auto_load_folder)
 
         if not SELENIUM_OK:
             messagebox.showwarning("Selenium Missing",
                 f"Selenium load hoyni:\n{SELENIUM_ERR}")
 
-    # -------- TOP: ADD ACCOUNT --------
+        # Show driver status
+        drv = find_cached_driver()
+        status = "OK" if drv else "Not downloaded (will auto on first launch)"
+        self.root.title(
+            f"FB Family Manager  [{APP_VERSION}]  -  "
+            f"Driver: {'Cached' if drv else 'Need download'}")
+
     def _build_add_frame(self):
         top = dark_frame(self.root, "Add Account")
         top.pack(fill="x", padx=10, pady=8)
 
-        # row 1: name + note
         r1 = tk.Frame(top, bg=BG_PANEL)
         r1.pack(fill="x", padx=8, pady=4)
 
@@ -280,7 +381,6 @@ class App:
         self.note_e = dark_entry(r1, width=25)
         self.note_e.pack(side="left")
 
-        # row 2: cookie (SMALL box now — height=2)
         r2 = tk.Frame(top, bg=BG_PANEL)
         r2.pack(fill="x", padx=8, pady=4)
 
@@ -292,7 +392,6 @@ class App:
                                 font=("Consolas", 9))
         self.cookie_t.pack(side="left", fill="x", expand=True)
 
-        # row 3: buttons
         r3 = tk.Frame(top, bg=BG_PANEL)
         r3.pack(fill="x", padx=8, pady=6)
 
@@ -306,13 +405,14 @@ class App:
                     self.import_json, 12).pack(side="left", padx=3)
         dark_button(r3, "Export JSON", "#424242",
                     self.export, 12).pack(side="left", padx=3)
+        dark_button(r3, "Download Driver", "#00897b",
+                    self.download_driver_manual, 16).pack(side="left", padx=3)
 
-        # hint
         tk.Label(top, bg=BG_PANEL, fg=FG_LABEL,
-                 text=f"Bulk: Cookie box e onek gulo cookie newline diye alada korle auto add hobe.  Folder: {COOKIE_FOLDER}",
+                 text=f"Cookie folder: {COOKIE_FOLDER}   |   "
+                      f"Driver cache: {DRIVER_CACHE}",
                  font=("Segoe UI", 8, "italic")).pack(anchor="w", padx=10, pady=(0, 6))
 
-    # -------- MIDDLE: TABLE --------
     def _build_table(self):
         mid = dark_frame(self.root, "Accounts")
         mid.pack(fill="both", expand=True, padx=10, pady=6)
@@ -334,12 +434,10 @@ class App:
         self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
         sb.pack(side="right", fill="y", pady=6, padx=(0, 6))
 
-    # -------- BOTTOM: ACTION BUTTONS --------
     def _build_bottom(self):
         bot = dark_frame(self.root, "Actions")
         bot.pack(fill="x", padx=10, pady=8)
 
-        # row 1
         r1 = tk.Frame(bot, bg=BG_PANEL)
         r1.pack(fill="x", padx=8, pady=4)
 
@@ -355,7 +453,6 @@ class App:
         dark_button(r1, "Professional", "#5e35b1",
                     lambda: self.open_url("https://www.facebook.com/settings/?tab=account"), 12).pack(side="left", padx=3)
 
-        # row 2
         r2 = tk.Frame(bot, bg=BG_PANEL)
         r2.pack(fill="x", padx=8, pady=(0, 6))
 
@@ -365,9 +462,37 @@ class App:
                     self.open_cookie_folder, 18).pack(side="left", padx=3)
         dark_button(r2, "Reload Folder", PURPLE,
                     self.auto_load_folder, 14).pack(side="left", padx=3)
+        dark_button(r2, "Open Driver Folder", "#424242",
+                    self.open_driver_folder, 18).pack(side="left", padx=3)
 
         self.tree.bind("<Double-1>",
                        lambda e: self.open_url("https://www.facebook.com/"))
+
+    # -------- DRIVER HELPERS --------
+    def download_driver_manual(self):
+        def worker():
+            self.root.title(f"FB Family Manager  [{APP_VERSION}]  -  Downloading driver...")
+            path = download_chromedriver()
+            if path:
+                messagebox.showinfo("Driver", f"Downloaded:\n{path}")
+            else:
+                messagebox.showerror("Driver",
+                    "Download failed.\n\n"
+                    "Manual download:\n"
+                    "https://googlechromelabs.github.io/chrome-for-testing/\n\n"
+                    "Pick version 134.x, download win64 chromedriver,\n"
+                    f"extract chromedriver.exe to:\n{DRIVER_CACHE}")
+            self.root.title(
+                f"FB Family Manager  [{APP_VERSION}]  -  "
+                f"Driver: {'Ready' if path else 'Failed'}")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_driver_folder(self):
+        os.makedirs(DRIVER_CACHE, exist_ok=True)
+        try:
+            os.startfile(DRIVER_CACHE)
+        except Exception:
+            messagebox.showinfo("Folder", DRIVER_CACHE)
 
     # -------- ADD LOGIC --------
     def add(self):
@@ -379,7 +504,6 @@ class App:
             messagebox.showwarning("Missing", "Cookie dite hobe")
             return
 
-        # Bulk mode — multi-line
         lines = [l.strip() for l in ck.split("\n") if l.strip()]
         if len(lines) > 1:
             n = 0
@@ -411,7 +535,6 @@ class App:
         except Exception:
             pass
 
-    # -------- AUTO FOLDER LOAD --------
     def open_cookie_folder(self):
         os.makedirs(COOKIE_FOLDER, exist_ok=True)
         try:
@@ -434,7 +557,6 @@ class App:
             except Exception:
                 continue
 
-            # JSON array support
             if fname.endswith(".json"):
                 try:
                     arr = json.loads(content)
@@ -449,7 +571,6 @@ class App:
                 except Exception:
                     pass
 
-            # plain text
             for line in content.split("\n"):
                 line = line.strip()
                 if "c_user=" in line and base not in existing:
@@ -460,12 +581,12 @@ class App:
 
         self.refresh()
         if loaded:
-            messagebox.showinfo("Auto Loaded", f"{loaded} accounts loaded from folder")
+            messagebox.showinfo("Auto Loaded",
+                f"{loaded} accounts loaded from folder")
 
     def bulk_import_folder(self):
         self.auto_load_folder()
 
-    # -------- UTILS --------
     def refresh(self):
         for row in self.tree.get_children():
             self.tree.delete(row)
