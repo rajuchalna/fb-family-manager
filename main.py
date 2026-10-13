@@ -9,8 +9,41 @@ import tempfile
 import re
 import time
 
+# ============================================================
+# VERSION — to verify you're running the new build
+# ============================================================
+APP_VERSION = "v2.0-SELENIUM-FIX"
+
+# ============================================================
+# FORCE IMPORTS — critical for PyInstaller to bundle Selenium
+# ============================================================
+SELENIUM_OK = False
+SELENIUM_ERR = ""
+try:
+    import selenium
+    import selenium.webdriver
+    import selenium.webdriver.chrome
+    import selenium.webdriver.chrome.webdriver
+    import selenium.webdriver.chrome.service
+    import selenium.webdriver.chrome.options
+    import selenium.webdriver.common
+    import selenium.webdriver.common.by
+    import selenium.webdriver.common.keys
+    import selenium.webdriver.support
+    import selenium.webdriver.support.ui
+    import selenium.webdriver.support.expected_conditions
+    from selenium.webdriver.chrome.webdriver import WebDriver as ChromeDriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    SELENIUM_OK = True
+except Exception as _e:
+    SELENIUM_ERR = str(_e)
+
+
 DB = "fb_accounts.db"
 
+
+# ---------- DATABASE ----------
 def init_db():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -25,6 +58,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def add_account(name, cookie, note=""):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -32,6 +66,7 @@ def add_account(name, cookie, note=""):
               (name, cookie, note))
     conn.commit()
     conn.close()
+
 
 def get_accounts():
     conn = sqlite3.connect(DB)
@@ -41,6 +76,7 @@ def get_accounts():
     conn.close()
     return rows
 
+
 def update_account(acc_id, name, cookie, note):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -49,6 +85,7 @@ def update_account(acc_id, name, cookie, note):
     conn.commit()
     conn.close()
 
+
 def delete_account(acc_id):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -56,8 +93,18 @@ def delete_account(acc_id):
     conn.commit()
     conn.close()
 
+
+# ---------- COOKIE HELPERS ----------
+def normalize_cookie(cookie_str):
+    """Remove newlines and extra whitespace from cookie string"""
+    s = cookie_str.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
 def parse_cookie(cookie_str):
     jar = {}
+    cookie_str = normalize_cookie(cookie_str)
     for pair in cookie_str.split(";"):
         pair = pair.strip()
         if "=" in pair:
@@ -65,10 +112,13 @@ def parse_cookie(cookie_str):
             jar[k.strip()] = v.strip()
     return jar
 
+
 def get_c_user(cookie_str):
     jar = parse_cookie(cookie_str)
     return jar.get("c_user", "")
 
+
+# ---------- BROWSER ----------
 def find_browser():
     candidates = [
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -81,21 +131,22 @@ def find_browser():
             return p
     return None
 
+
 def launch_browser_with_cookie(account_name, cookie_str, target_url):
-    try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-    except ImportError:
-        messagebox.showerror("Missing",
-            "Selenium install kora nei.\n\npip install selenium")
+    if not SELENIUM_OK:
+        messagebox.showerror(
+            "Selenium Error",
+            f"Selenium load hoyni:\n\n{SELENIUM_ERR}\n\n"
+            "Notun .exe download korun."
+        )
         return
 
     browser_path = find_browser()
     if not browser_path:
-        messagebox.showerror("Browser", "Chrome/Edge paoa jaini")
+        messagebox.showerror("Browser", "Chrome ba Edge paoa jayni")
         return
 
-    safe_name = re.sub(r'[^A-Za-z0-9_\-]', '_', account_name)[:20]
+    safe_name = re.sub(r"[^A-Za-z0-9_\-]", "_", account_name)[:20]
     profile_dir = os.path.join(
         os.path.expanduser("~"),
         ".fb_family_manager",
@@ -112,47 +163,64 @@ def launch_browser_with_cookie(account_name, cookie_str, target_url):
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
 
+    driver = None
     try:
-        driver = webdriver.Chrome(options=opts)
+        driver = ChromeDriver(options=opts)
     except Exception as e:
-        messagebox.showerror("Browser launch failed", str(e))
+        messagebox.showerror("Browser launch failed",
+                             f"{type(e).__name__}: {e}")
         return
 
     try:
         driver.get("https://www.facebook.com/")
-        time.sleep(1.5)
+        time.sleep(2)
         for k, v in parse_cookie(cookie_str).items():
             try:
-                driver.add_cookie({"name": k, "value": v,
-                                   "domain": ".facebook.com", "path": "/"})
+                driver.add_cookie({
+                    "name": k, "value": v,
+                    "domain": ".facebook.com", "path": "/"
+                })
             except Exception:
                 pass
         driver.get(target_url)
     except Exception as e:
         messagebox.showerror("Navigation error", str(e))
 
+
+# ---------- GUI ----------
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("FB Family Manager")
+        self.root.title(f"FB Family Manager  [{APP_VERSION}]")
         self.root.geometry("1100x680")
         self._build_add_frame()
         self._build_table()
         self._build_bottom()
         self.refresh()
 
+        if not SELENIUM_OK:
+            messagebox.showwarning(
+                "Selenium Missing",
+                f"Selenium load hoyni:\n{SELENIUM_ERR}\n\n"
+                "Open FB kaj korbe na. Notun build lagbe."
+            )
+
     def _build_add_frame(self):
         top = tk.LabelFrame(self.root, text="Add Account", padx=8, pady=8)
         top.pack(fill="x", padx=10, pady=5)
+
         tk.Label(top, text="Name:").grid(row=0, column=0, sticky="w")
         self.name_e = tk.Entry(top, width=18)
         self.name_e.grid(row=0, column=1, padx=4)
+
         tk.Label(top, text="Note:").grid(row=0, column=2, sticky="w")
         self.note_e = tk.Entry(top, width=22)
         self.note_e.grid(row=0, column=3, padx=4)
+
         tk.Label(top, text="Cookie:").grid(row=1, column=0, sticky="nw", pady=4)
         self.cookie_t = tk.Text(top, width=110, height=4)
         self.cookie_t.grid(row=1, column=1, columnspan=4, pady=4, sticky="we")
+
         bf = tk.Frame(top)
         bf.grid(row=2, column=0, columnspan=5, pady=4)
         tk.Button(bf, text="Add Account", width=14, bg="#4CAF50",
@@ -170,6 +238,7 @@ class App:
     def _build_table(self):
         mid = tk.LabelFrame(self.root, text="Accounts", padx=4, pady=4)
         mid.pack(fill="both", expand=True, padx=10, pady=5)
+
         cols = ("id", "name", "user_id", "note")
         self.tree = ttk.Treeview(mid, columns=cols, show="headings", height=15)
         for c in cols:
@@ -179,6 +248,7 @@ class App:
         self.tree.column("user_id", width=180)
         self.tree.column("note", width=500)
         self.tree.pack(fill="both", expand=True, side="left")
+
         sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         sb.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=sb.set)
@@ -188,6 +258,7 @@ class App:
                             text="Actions (double-click row to open FB)",
                             padx=6, pady=6)
         bot.pack(fill="x", padx=10, pady=5)
+
         tk.Button(bot, text="Open FB", width=14, bg="#4CAF50", fg="white",
                   command=lambda: self.open_url("https://www.facebook.com/")
                   ).pack(side="left", padx=3)
@@ -203,6 +274,7 @@ class App:
                   command=self.edit).pack(side="left", padx=3)
         tk.Button(bot, text="Delete", width=10, bg="#f44336", fg="white",
                   command=self.delete).pack(side="left", padx=3)
+
         self.tree.bind("<Double-1>",
                        lambda e: self.open_url("https://www.facebook.com/"))
 
@@ -266,11 +338,12 @@ class App:
                          daemon=True).start()
 
     def open_ads_manager(self):
-        url = "https://adsmanager.facebook.com/adsmanager/manage/campaigns"
-        self.open_url(url)
+        self.open_url(
+            "https://adsmanager.facebook.com/adsmanager/manage/campaigns")
 
     def open_payment(self):
-        url = "https://adsmanager.facebook.com/adsmanager/billing_hub/payment_settings"
+        url = ("https://adsmanager.facebook.com/adsmanager/"
+               "billing_hub/payment_settings")
         custom = simpledialog.askstring(
             "Payment URL",
             "Payment page URL din:\n(Cancel = generic page)",
@@ -306,17 +379,21 @@ class App:
                   (acc_id,))
         name, cookie, note = c.fetchone()
         conn.close()
+
         win = tk.Toplevel(self.root)
         win.title(f"Edit #{acc_id}")
         win.geometry("800x400")
+
         tk.Label(win, text="Name:").pack(anchor="w", padx=10)
         ne = tk.Entry(win, width=80)
         ne.insert(0, name)
         ne.pack(padx=10)
+
         tk.Label(win, text="Note:").pack(anchor="w", padx=10)
         noe = tk.Entry(win, width=80)
         noe.insert(0, note or "")
         noe.pack(padx=10)
+
         tk.Label(win, text="Cookie:").pack(anchor="w", padx=10)
         ce = tk.Text(win, height=10, width=100)
         ce.insert("1.0", cookie)
@@ -328,6 +405,7 @@ class App:
                            noe.get().strip())
             win.destroy()
             self.refresh()
+
         tk.Button(win, text="Save", bg="#4CAF50", fg="white",
                   width=12, command=save).pack(pady=8)
 
@@ -370,6 +448,7 @@ class App:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         messagebox.showinfo("Exported", f"Saved: {path}")
+
 
 if __name__ == "__main__":
     init_db()
